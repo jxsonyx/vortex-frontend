@@ -11,6 +11,8 @@ import { isValidStellarPublicKey } from "@/lib/stellarAddress";
 import { formatTokenAmount } from "@/lib/format";
 import { useTranslation } from "@/lib/i18n/I18nProvider";
 import type { MessageKey } from "@/lib/i18n";
+import { detectDestination, resolveFederation } from "@/lib/federation";
+import { assessQuote } from "@/lib/quoteRisk";
 
 export const DEFAULT_SLIPPAGE_PCT = 0.5;
 export const HIGH_PRICE_IMPACT_THRESHOLD_PCT = 3;
@@ -79,11 +81,13 @@ export type SwapCardProps = {
 export function SwapCard({ initialAmount = "", previewQuote, onPreviewSubmit }: SwapCardProps = {}) {
   const { t } = useTranslation();
 
-  const [srcChain, setSrcChain] = useState("ethereum");
-  const [srcToken, setSrcToken] = useState(SRC_TOKENS.ethereum![0]!);
-  const [dstToken, setDstToken] = useState(DST_TOKENS[0]!);
+  const [srcChain, setSrcChain] = useState(initialChain && CHAINS.some((item) => item.id === initialChain) ? initialChain : "ethereum");
+  const [srcToken, setSrcToken] = useState(SRC_TOKENS[initialChain ?? "ethereum"]?.find((item) => item.symbol === initialSrcToken) ?? SRC_TOKENS.ethereum![0]!);
+  const [dstToken, setDstToken] = useState(DST_TOKENS.find((item) => item.symbol === initialDstToken) ?? DST_TOKENS[0]!);
   const [srcAmount, setSrcAmount] = useState(initialAmount);
   const [dstAddress, setDstAddress] = useState("");
+  const [resolvedMemo, setResolvedMemo] = useState<string | undefined>();
+  const [destinationError, setDestinationError] = useState<string | null>(null);
   const [slippagePct, setSlippagePct] = useState(String(DEFAULT_SLIPPAGE_PCT));
   const [showChainPicker, setShowChainPicker] = useState(false);
   const [showTokenPicker, setShowTokenPicker] = useState(false);
@@ -185,7 +189,8 @@ export function SwapCard({ initialAmount = "", previewQuote, onPreviewSubmit }: 
     return () => clearTimeout(timer);
   }, [quote, routeKey]);
 
-  const dstAddressError = dstAddress && !isValidStellarPublicKey(dstAddress) ? t("swap.destination.invalidAddress") : null;
+  const dstAddressError = destinationError ?? (dstAddress && !isValidStellarPublicKey(dstAddress) && !["muxed", "federation"].includes(detectDestination(dstAddress)) ? t("swap.destination.invalidAddress") : null);
+  useEffect(() => { const kind = detectDestination(dstAddress); if (kind !== "federation") { setDestinationError(null); return; } const controller = new AbortController(); void resolveFederation(dstAddress, controller.signal).then((resolved) => { setDstAddress(resolved.address); setResolvedMemo(resolved.memo); setDestinationError(null); }).catch(() => { if (!controller.signal.aborted) setDestinationError("Could not resolve federation address."); }); return () => controller.abort(); }, [dstAddress]);
 
   // ── Derived display values ─────────────────────────────────────────────────
   const dstAmount = quote
@@ -197,7 +202,8 @@ export function SwapCard({ initialAmount = "", previewQuote, onPreviewSubmit }: 
   const srcValueUSD = srcAmount ? parseFloat(srcAmount) * srcToken.priceUsd : 0;
   const parsedSlippagePct = Math.max(0, Math.min(50, parseFloat(slippagePct) || 0));
   const minOut = dstAmount > 0 ? (dstAmount * (1 - parsedSlippagePct / 100)).toFixed(dstToken.symbol === "XLM" ? 2 : 4) : "0";
-  const hasHighPriceImpact = quote ? quote.priceImpactPct > HIGH_PRICE_IMPACT_THRESHOLD_PCT : false;
+  const quoteRisk = quote ? assessQuote(quote) : null;
+  const hasHighPriceImpact = quoteRisk?.level === "warning" || quoteRisk?.level === "severe";
 
   const quoteErrorType = (() => {
     if (!quoteError) return null;
@@ -285,6 +291,7 @@ export function SwapCard({ initialAmount = "", previewQuote, onPreviewSubmit }: 
       srcAmount,
       dstToken: dstToken.symbol,
       minOut,
+      memo: resolvedMemo,
     });
   };
 
@@ -614,6 +621,7 @@ export function SwapCard({ initialAmount = "", previewQuote, onPreviewSubmit }: 
             className="w-full bg-vx-surface border border-vx-border rounded-lg px-3 py-2.5 text-sm text-vx-text placeholder-vx-dim/60 focus:outline-none focus:border-vx-sage/50 transition-colors"
           />
           {dstAddressError && <p id="dst-address-error" role="alert" className="text-[11px] text-red-400">{dstAddressError}</p>}
+          {resolvedMemo && <p className="text-[11px] text-vx-muted">Federation memo: <span className="font-mono">{resolvedMemo}</span></p>}
         </div>
 
         {quote && srcAmount && (

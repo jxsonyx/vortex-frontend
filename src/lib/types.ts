@@ -72,6 +72,7 @@ export type CreateIntentRequest = {
   dstToken: string;
   minOut?: string | undefined;
   dstAddress: string;
+  memo?: string;
 };
 
 export type CreateIntentResponse = {
